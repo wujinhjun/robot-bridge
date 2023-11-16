@@ -13,11 +13,13 @@ hardwareRouter.get('/', (req: Request, res: Response, next: NextFunction) => {
 });
 
 // 返回串口列表
-hardwareRouter.get("/serials", async (req: Request, res: Response, next: NextFunction) =>{
+hardwareRouter.get(
+  '/serials',
+  async (req: Request, res: Response, next: NextFunction) => {
     const list = await SerialPort.list();
-    console.log(list);
-    res.json(list)
-})
+    res.json(list);
+  }
+);
 
 // 设置目标串口
 
