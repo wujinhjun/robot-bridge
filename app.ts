@@ -4,9 +4,24 @@ import cors from 'cors';
 import { Server as socketIO } from 'socket.io';
 import Websocket from 'ws';
 import fs from 'fs';
+import { execSync, exec } from 'child_process';
+import CryptoJS from 'crypto-js';
+import 'dotenv/config';
+
+const inputPath = './input.wav';
+const outputFilePath = './output.pcm';
+
+const XF_APP_ID = process.env.XF_APP_ID ?? '';
+const XF_API_KEY = process.env.XF_API_KEY ?? '';
+
+const XF_HOST_URL = 'wss://rtasr.xfyun.cn/v1/ws';
+
+const ffmpegCommand = `ffmpeg -y -i ${inputPath} -acodec pcm_s16le -f s16le -ac 1 -ar 16000 ${outputFilePath}`;
 
 import hardwareRouter from './controllers/hardware';
 import testRouter from './controllers/test';
+
+import baiduSISRouter from './controllers/baiduSpeech';
 
 const app = express();
 const server = http.createServer(app);
@@ -29,6 +44,8 @@ app.get('/', (req: Request, res: Response) => {
 app.use('/api/hardware', hardwareRouter);
 app.use('/api/test', testRouter);
 
+app.use('/api/speech', baiduSISRouter);
+
 ioServer.on('connection', (socket) => {
   console.log('a user connected');
 
@@ -37,93 +54,119 @@ ioServer.on('connection', (socket) => {
 
     socket.emit('chat audio', data);
 
-    const testAudio = fs.readFileSync('./speech.mp3');
-    // console.log(data.data);
-    const audioBuffer: Buffer = data.data;
+    fs.writeFileSync(inputPath, data.data);
 
-    fs.writeFileSync('./test.pcm', audioBuffer);
-    const audioList: Float32Array[] = [];
+    console.log('start exec');
 
-    const testAudioList: Buffer[] = [];
+    execSync(ffmpegCommand, { stdio: 'inherit' });
 
-    // for (let i = 0; i < audioBuffer.length; i += 1600) {
-    //   const chunk = audioBuffer.subarray(i, i + 1600);
-    //   const chunk1 = testAudio.slice(i, i + 1600);
-    //   audioList.push(chunk);
+    let ts = Number.parseInt(String(new Date().getTime() / 1000));
 
-    //   testAudioList.push(chunk1);
-    // }
+    const wssUrl =
+      XF_HOST_URL +
+      '?appid=' +
+      XF_APP_ID +
+      '&ts=' +
+      ts +
+      '&signa=' +
+      getSigna(ts);
 
-    // const arrayList = audioBuffer.forEach((item,))
-
-    const ws = new Websocket(
-      `wss://${data.endpoint}/v1/${data.projectId}/rasr/continue-stream`,
-      {
-        headers: {
-          'X-Auth-Token': data.token,
-        },
-      },
-    );
-
-    ws.onopen = () => {
-      const data = '';
-      const body = {
-        command: 'START',
-        config: {
-          audio_format: 'pcm16k16bit',
-          property: 'chinese_16k_general',
-        },
-      };
-
-      ws.send(JSON.stringify(body));
+    const config = {
+      file: outputFilePath,
+      highWaterMark: 1280,
     };
 
-    ws.onmessage = (msg) => {
-      console.log(JSON.parse(msg.data as string));
+    const ws = new Websocket(wssUrl);
+    const result: any[] = [];
 
-      const result = JSON.parse(msg.data as string);
-      if (result.resp_type === 'START') {
-        // console.log(audioBuffer.length);
-        // console.log(audioList.length);
+    ws.on('open', () => {
+      console.log('websocket connect!');
+    });
 
-        // // ws.send(audioBuffer);
-        // audioList.forEach((chunk, index) => {
-        //   console.log(chunk);
-
-        //   //   ws.send(chunk);
-        //   console.log('send: ' + index);
-        // });
-
-        // ws.send(testAudio);
-
-        console.log(testAudioList.length);
-        // testAudioList.forEach((chunk, index) => {
-        //   console.log(chunk);
-
-        //   ws.send(chunk);
-        //   console.log('send: ' + index);
-        // });
-        console.log('send');
+    ws.on('message', (data, error) => {
+      if (error) {
+        console.error(error);
+        return;
       }
 
-      // ws.send(JSON.stringify(bod));
+      const res = JSON.parse(data as unknown as string);
 
-      //   const dataKeys = Reflect.ownKeys(data);
+      switch (res.action) {
+        case 'error':
+          console.log(`error code: ${res.code}, error message: ${res.desc}`);
+          break;
+        case 'started':
+          console.log('started');
+          console.log('sid is:' + res.sid);
+          const readerStream = fs.createReadStream(config.file, {
+            highWaterMark: config.highWaterMark,
+          });
 
-      //   dataKeys.forEach((key) => {
-      //     console.log(key, data[key]);
-      //   });
-      //   console.log(Reflect.get(data, Symbol('kData')));
-      //   console.log(data[Symbol('kData')]);
-    };
+          readerStream.on('data', (chunk) => {
+            // console.log(chunk.length);
 
-    ws.onerror = (err) => {
-      console.error(err.message);
-      //   console.log(err);
-    };
+            ws.send(chunk);
+          });
+
+          readerStream.on('end', function () {
+            // 最终帧发送结束
+            ws.send('{"end": true}');
+          });
+          break;
+        case 'result':
+          const data = JSON.parse(res.data);
+          //   console.log('result is:' + res.result.ws);
+          //   console.log(data.cn.st.rt);
+          console.log(data);
+
+          //   fs.writeFileSync('./test.txt', '\n');
+          fs.appendFileSync('./test.txt', `\n${res.data}\n`);
+          //   fs.writeFileSync('./test.txt', '\n');
+
+          result[data.seg_id] = data;
+          if (data.cn.st.type == 0) {
+            result.forEach((item) => {
+              let str = '实时转写';
+
+              str +=
+                item.cn.st.type === 0
+                  ? '【最终】识别结果：'
+                  : '【中间】识别结果：';
+
+              item.cn.st.rt.forEach((rtItem: any) => {
+                rtItem.ws.forEach((wsItem: any) => {
+                  wsItem.cw.forEach((cwItem: any) => {
+                    str += cwItem.w;
+                  });
+                });
+              });
+
+              console.log(str);
+            });
+          }
+          break;
+      }
+    });
+
+    ws.on('close', () => {
+      console.log('websocket close!');
+    });
+
+    ws.on('error', (err) => {
+      console.log('websocket error!');
+      console.error(err);
+    });
   });
 });
 
 server.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 });
+
+// 鉴权签名
+function getSigna(ts: number) {
+  let md5 = CryptoJS.MD5(XF_APP_ID + ts).toString();
+  let sha1 = CryptoJS.HmacSHA1(md5, XF_API_KEY);
+  let base64 = CryptoJS.enc.Base64.stringify(sha1);
+  return encodeURIComponent(base64);
+}
