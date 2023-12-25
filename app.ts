@@ -21,8 +21,6 @@ const ffmpegCommand = `ffmpeg -y -i ${inputPath} -acodec pcm_s16le -f s16le -ac 
 import hardwareRouter from './controllers/hardware';
 import testRouter from './controllers/test';
 
-import baiduSISRouter from './controllers/baiduSpeech';
-
 const app = express();
 const server = http.createServer(app);
 const ioServer = new socketIO(server, {
@@ -43,8 +41,6 @@ app.get('/', (req: Request, res: Response) => {
 
 app.use('/api/hardware', hardwareRouter);
 app.use('/api/test', testRouter);
-
-app.use('/api/speech', baiduSISRouter);
 
 ioServer.on('connection', (socket) => {
   console.log('a user connected');
